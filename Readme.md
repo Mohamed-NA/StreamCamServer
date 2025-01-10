@@ -52,5 +52,4 @@ This project provides a secure, real-time camera streaming application using Fla
      ```
      https://<your-domain-or-ip>:5000
      ```
-   - Accept the self-signed certificate warning if using self-signed certificates (for development).
    - The application should load, and the camera stream will be displayed.
