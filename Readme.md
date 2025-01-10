@@ -8,8 +8,8 @@ This project provides a secure, real-time camera streaming application using Fla
 
 1. Clone the repository:
    ```bash
-   git clone <repository-url>
-   cd <repository-folder>
+   git clone https://github.com/MohamedEshmawy/StreamCamServer
+   cd StreamCamServer
    ```
 
 2. Install the required dependencies:
