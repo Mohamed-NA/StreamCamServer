@@ -1,5 +1,7 @@
 # WebSocket Secure (WSS) Camera Stream Application
 
+[![Test and Publish Docker Image](https://github.com/MohamedEshmawy/StreamCamServer/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/MohamedEshmawy/StreamCamServer/actions/workflows/docker-publish.yml)
+
 This project provides a secure, real-time camera streaming application using Flask and WebSockets over HTTPS (WSS).
 
 ---
