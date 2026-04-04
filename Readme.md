@@ -25,7 +25,7 @@ docker run --rm -p 5000:5000 streamcamserver:local
 This repository now includes a workflow at `.github/workflows/docker-publish.yml` that:
 
 1. Runs the smoke test on every push to any branch.
-2. Runs the smoke test and pushes a Docker image on pull requests.
+2. Pushes a Docker image only on pushes to `main` (for example, after a PR is merged).
 3. Lets you manually trigger a test-and-push run from the **Actions** tab on any branch.
 
 ### **Required GitHub Secrets**
