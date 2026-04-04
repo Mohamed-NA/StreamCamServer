@@ -26,6 +26,9 @@ def handle_video_frame(data):
     cv2.imwrite(filename, frame)
     print(f"Saved frame as {filename}")
 
+    # Broadcast the frame back to all connected clients
+    socketio.emit('server_frame', data)
+
 if __name__ == '__main__':
     cert_file = 'certificates/certificate.crt'
     key_file = 'certificates/private.key'
@@ -35,7 +38,7 @@ if __name__ == '__main__':
     socketio.run(
         app,
         host='0.0.0.0',
-        port=5000,
+        port=8080,
         ssl_context=ssl_context,
         allow_unsafe_werkzeug=True,
     )

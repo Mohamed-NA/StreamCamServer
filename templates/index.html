@@ -3,12 +3,593 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Camera Stream</title>
+    <title>StreamCam</title>
     <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
     <script src="{{ url_for('static', filename='script.js') }}" defer></script>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+        :root {
+            --accent: #6366f1;
+            --accent-dim: rgba(99,102,241,0.15);
+            --surface: rgba(255,255,255,0.04);
+            --border: rgba(255,255,255,0.08);
+            --text: #e2e8f0;
+            --muted: #64748b;
+            --danger: #ef4444;
+            --success: #22c55e;
+        }
+
+        html, body {
+            height: 100%;
+        }
+
+        body {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            background: #070a10;
+            font-family: system-ui, -apple-system, sans-serif;
+            color: var(--text);
+            overflow: hidden;
+        }
+
+        /* ── Ambient background ── */
+        .bg-glow {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 0;
+            background:
+                radial-gradient(ellipse 60% 50% at 50% 40%, rgba(99,102,241,0.12) 0%, transparent 100%),
+                radial-gradient(ellipse 40% 30% at 20% 80%, rgba(139,92,246,0.07) 0%, transparent 100%);
+        }
+
+        /* ── Layout ── */
+        .layout {
+            position: relative;
+            z-index: 1;
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            height: 100vh;
+            padding: 20px 24px;
+            gap: 16px;
+        }
+
+        /* ── Top bar ── */
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .brand-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            background: var(--accent-dim);
+            border: 1px solid rgba(99,102,241,0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--accent);
+        }
+
+        .brand-icon svg { width: 16px; height: 16px; }
+
+        .brand-name {
+            font-size: 0.95rem;
+            font-weight: 700;
+            letter-spacing: -0.01em;
+            color: var(--text);
+        }
+
+        .brand-name span { color: var(--accent); }
+
+        .topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .badge {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.72rem;
+            font-weight: 500;
+            color: var(--muted);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            padding: 5px 12px;
+            transition: border-color 0.3s, color 0.3s;
+        }
+
+        .badge.live {
+            border-color: rgba(34,197,94,0.3);
+            color: #86efac;
+        }
+
+        .dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #334155;
+            flex-shrink: 0;
+            transition: background 0.4s, box-shadow 0.4s;
+        }
+
+        .dot.connected {
+            background: var(--success);
+            box-shadow: 0 0 0 3px rgba(34,197,94,0.2);
+            animation: pulse 2s infinite;
+        }
+
+        .dot.disconnected { background: var(--danger); }
+
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 3px rgba(34,197,94,0.2); }
+            50%       { box-shadow: 0 0 0 6px rgba(34,197,94,0.06); }
+        }
+
+        /* ── Main area ── */
+        .main {
+            display: grid;
+            grid-template-columns: 1fr 240px;
+            gap: 16px;
+            min-height: 0;
+        }
+
+        /* ── Video card ── */
+        .video-card {
+            position: relative;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #server-frame {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
+            transition: opacity 0.5s;
+        }
+
+        #server-frame.hidden { opacity: 0; }
+
+        /* permission / error overlay */
+        .overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            background: rgba(7,10,16,0.85);
+            backdrop-filter: blur(8px);
+            transition: opacity 0.4s;
+            text-align: center;
+            padding: 32px;
+        }
+
+        .overlay.hidden { opacity: 0; pointer-events: none; }
+
+        .overlay-icon {
+            width: 56px;
+            height: 56px;
+            border-radius: 16px;
+            background: var(--accent-dim);
+            border: 1px solid rgba(99,102,241,0.25);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--accent);
+        }
+
+        .overlay-icon svg { width: 26px; height: 26px; }
+        .overlay-icon.error { background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.25); color: var(--danger); }
+
+        .overlay h2 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .overlay p {
+            font-size: 0.8rem;
+            color: var(--muted);
+            max-width: 260px;
+            line-height: 1.6;
+        }
+
+        /* vignette */
+        .video-card::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            box-shadow: inset 0 0 60px rgba(0,0,0,0.45);
+            pointer-events: none;
+            border-radius: inherit;
+        }
+
+        /* REC badge */
+        .rec-badge {
+            position: absolute;
+            top: 14px;
+            left: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            color: #fca5a5;
+            background: rgba(239,68,68,0.15);
+            border: 1px solid rgba(239,68,68,0.25);
+            border-radius: 999px;
+            padding: 4px 10px;
+            opacity: 0;
+            transition: opacity 0.4s;
+            z-index: 2;
+        }
+
+        .rec-badge.visible { opacity: 1; }
+
+        .rec-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--danger);
+            animation: blink 1.2s infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50%       { opacity: 0.3; }
+        }
+
+        /* pause button */
+        .pause-btn {
+            position: absolute;
+            bottom: 14px;
+            right: 14px;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.12);
+            color: var(--text);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(8px);
+            transition: background 0.2s, transform 0.15s;
+            z-index: 2;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .pause-btn.visible { opacity: 1; pointer-events: auto; }
+        .pause-btn:hover { background: rgba(255,255,255,0.14); transform: scale(1.08); }
+        .pause-btn svg { width: 16px; height: 16px; }
+
+        /* ── Sidebar ── */
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            min-height: 0;
+            overflow-y: auto;
+        }
+
+        .panel {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 16px;
+        }
+
+        .panel-title {
+            font-size: 0.68rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 14px;
+        }
+
+        /* Stats */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .stat {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px 12px;
+        }
+
+        .stat-label {
+            font-size: 0.65rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            margin-bottom: 4px;
+        }
+
+        .stat-value {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: var(--text);
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -0.02em;
+        }
+
+        .stat-value.accent { color: var(--accent); }
+
+        /* Controls */
+        .control-row {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .control-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--muted);
+            margin-bottom: 6px;
+        }
+
+        .control-label span:last-child {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 4px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.08);
+            outline: none;
+            cursor: pointer;
+        }
+
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-dim);
+            cursor: pointer;
+            transition: box-shadow 0.2s;
+        }
+
+        input[type=range]::-webkit-slider-thumb:hover {
+            box-shadow: 0 0 0 5px var(--accent-dim);
+        }
+
+        /* Quality toggle */
+        .toggle-group {
+            display: flex;
+            gap: 6px;
+        }
+
+        .toggle-btn {
+            flex: 1;
+            padding: 6px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--muted);
+            font-size: 0.72rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .toggle-btn.active {
+            background: var(--accent-dim);
+            border-color: rgba(99,102,241,0.4);
+            color: #a5b4fc;
+        }
+
+        /* Activity log */
+        .log {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            max-height: 130px;
+            overflow-y: auto;
+        }
+
+        .log::-webkit-scrollbar { width: 3px; }
+        .log::-webkit-scrollbar-track { background: transparent; }
+        .log::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 99px; }
+
+        .log-entry {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            font-size: 0.7rem;
+            color: var(--muted);
+            line-height: 1.4;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .log-time {
+            color: #334155;
+            flex-shrink: 0;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .log-entry.success .log-msg { color: #86efac; }
+        .log-entry.error   .log-msg { color: #fca5a5; }
+        .log-entry.info    .log-msg { color: #93c5fd; }
+
+        /* ── Bottom bar ── */
+        .bottombar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.7rem;
+            color: #1e293b;
+        }
+    </style>
 </head>
 <body>
-    <video id="video" width="640" height="480" autoplay></video>
+    <div class="bg-glow"></div>
+
+    <div class="layout">
+
+        <!-- Top bar -->
+        <header class="topbar">
+            <div class="brand">
+                <div class="brand-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M15 10l4.55-2.27A1 1 0 0121 8.67v6.66a1 1 0 01-1.45.9L15 14"/>
+                        <rect x="1" y="8" width="14" height="10" rx="2"/>
+                    </svg>
+                </div>
+                <span class="brand-name">Stream<span>Cam</span></span>
+            </div>
+            <div class="topbar-right">
+                <div class="badge" id="conn-badge">
+                    <div class="dot disconnected" id="status-dot"></div>
+                    <span id="status-text">Connecting</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main content -->
+        <div class="main">
+
+            <!-- Video -->
+            <div class="video-card">
+                <div class="rec-badge" id="rec-badge">
+                    <div class="rec-dot"></div>
+                    LIVE
+                </div>
+
+                <!-- Hidden video for camera capture only -->
+                <video id="video" autoplay playsinline style="display:none"></video>
+                <!-- Displays what the server received -->
+                <canvas id="server-frame" class="hidden"></canvas>
+
+                <div class="overlay" id="overlay">
+                    <div class="overlay-icon" id="overlay-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M15 10l4.55-2.27A1 1 0 0121 8.67v6.66a1 1 0 01-1.45.9L15 14"/>
+                            <rect x="1" y="8" width="14" height="10" rx="2"/>
+                        </svg>
+                    </div>
+                    <h2 id="overlay-title">Requesting camera</h2>
+                    <p id="overlay-desc">Please allow camera access to begin streaming.</p>
+                </div>
+
+                <button class="pause-btn" id="pause-btn" title="Pause stream">
+                    <svg id="pause-icon" viewBox="0 0 24 24" fill="currentColor">
+                        <rect x="6" y="4" width="4" height="16" rx="1"/>
+                        <rect x="14" y="4" width="4" height="16" rx="1"/>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Sidebar -->
+            <aside class="sidebar">
+
+                <!-- Stats -->
+                <div class="panel">
+                    <div class="panel-title">Stats</div>
+                    <div class="stats-grid">
+                        <div class="stat">
+                            <div class="stat-label">Frames</div>
+                            <div class="stat-value accent" id="frame-count">0</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-label">FPS</div>
+                            <div class="stat-value" id="fps-display">—</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-label">Quality</div>
+                            <div class="stat-value" id="quality-display">80%</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-label">Status</div>
+                            <div class="stat-value" id="state-display" style="font-size:0.75rem;padding-top:3px">—</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Controls -->
+                <div class="panel">
+                    <div class="panel-title">Controls</div>
+                    <div class="control-row">
+                        <div>
+                            <div class="control-label">
+                                <span>Frame rate</span>
+                                <span id="fps-label">15 fps</span>
+                            </div>
+                            <input type="range" id="fps-slider" min="1" max="30" value="15">
+                        </div>
+                        <div>
+                            <div class="control-label">
+                                <span>JPEG quality</span>
+                                <span id="quality-label">80%</span>
+                            </div>
+                            <input type="range" id="quality-slider" min="10" max="100" value="80">
+                        </div>
+                        <div>
+                            <div class="control-label"><span>Resolution</span></div>
+                            <div class="toggle-group" id="res-group">
+                                <button class="toggle-btn" data-w="320" data-h="240">240p</button>
+                                <button class="toggle-btn active" data-w="640" data-h="480">480p</button>
+                                <button class="toggle-btn" data-w="1280" data-h="720">720p</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Activity log -->
+                <div class="panel" style="flex:1; min-height:0; display:flex; flex-direction:column;">
+                    <div class="panel-title">Activity</div>
+                    <div class="log" id="log"></div>
+                </div>
+
+            </aside>
+        </div>
+
+        <!-- Bottom bar -->
+        <footer class="bottombar">
+            <span>StreamCam &copy; 2025</span>
+            <span id="res-display">640 × 480</span>
+        </footer>
+    </div>
 </body>
 </html>
