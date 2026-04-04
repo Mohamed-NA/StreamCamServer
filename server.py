@@ -32,4 +32,10 @@ if __name__ == '__main__':
 
     ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     ssl_context.load_cert_chain(certfile=cert_file, keyfile=key_file)
-    socketio.run(app, host='0.0.0.0', port=5000, ssl_context=ssl_context)
+    socketio.run(
+        app,
+        host='0.0.0.0',
+        port=5000,
+        ssl_context=ssl_context,
+        allow_unsafe_werkzeug=True,
+    )

@@ -90,3 +90,29 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # Validate the published image by pulling it from Docker Hub,
+      # starting a container, and checking the HTTPS endpoint.
+      - name: Verify published Docker image
+        run: |
+          set -e
+          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
+          docker pull "$IMAGE"
+          docker run -d --name streamcamserver-ci -p 5000:5000 "$IMAGE"
+
+          for i in {1..20}; do
+            if curl -kfsS https://127.0.0.1:5000 > /dev/null; then
+              echo "Published image health check passed"
+              docker logs streamcamserver-ci
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Published image health check failed"
+          docker logs streamcamserver-ci
+          exit 1
+
+      - name: Cleanup test container
+        if: always()
+        run: docker rm -f streamcamserver-ci || true
