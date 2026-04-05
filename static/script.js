@@ -201,6 +201,25 @@ document.addEventListener('DOMContentLoaded', () => {
         scheduleNext();
     });
 
+    // ── Detection results ──
+    socket.on('detections', (results) => {
+        const panel = document.getElementById('detection-panel');
+        const withMask    = results.filter(r => r.label === 'With Mask').length;
+        const withoutMask = results.filter(r => r.label === 'Without Mask').length;
+
+        document.getElementById('det-faces').textContent  = results.length;
+        document.getElementById('det-masked').textContent = withMask;
+        document.getElementById('det-no-mask').textContent = withoutMask;
+
+        const list = document.getElementById('det-list');
+        list.innerHTML = results.map((r, i) =>
+            `<div class="det-item ${r.label === 'With Mask' ? 'safe' : 'danger'}">
+                <span>Face ${i + 1}</span>
+                <span>${r.label} &nbsp; ${(r.confidence * 100).toFixed(0)}%</span>
+            </div>`
+        ).join('') || '<div class="det-empty">No faces detected</div>';
+    });
+
     // ── Socket ──
     socket.on('connect', () => {
         dot.className = 'dot connected';
