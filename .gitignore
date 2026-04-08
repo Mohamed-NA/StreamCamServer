@@ -175,3 +175,6 @@ received_frame.jpg
 
 # Downloaded training dataset
 data/
+
+# Training artifacts and checkpoints
+notebooks/vit-face-mask/checkpoint-129/
