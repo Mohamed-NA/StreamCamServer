@@ -1,4 +1,4 @@
-name: Test and Publish Docker Image
+name: Test and Publish Docker Images
 
 on:
   pull_request:
@@ -8,7 +8,8 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE_NAME: streamcamserver
+  APP_IMAGE_NAME: streamcamserver-app
+  MODELS_IMAGE_NAME: streamcamserver-models
 
 jobs:
   test:
@@ -23,26 +24,58 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
       - name: Install system packages
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: uv sync --frozen
 
       - name: Smoke test application import
         run: |
-          python -m compileall server.py
-          python - <<'PY'
+          uv run python -m compileall server.py model_manager.py
+          uv run python - <<'PY'
           import server
 
           assert server.app is not None
           assert server.socketio is not None
           print('Smoke test passed')
           PY
+
+      - name: Build app image
+        run: docker build -t streamcamserver-app:test .
+
+      - name: Build models image
+        run: docker build -f Dockerfile.models -t streamcamserver-models:test .
+
+      - name: Smoke test composed containers
+        env:
+          APP_IMAGE: streamcamserver-app:test
+          MODELS_IMAGE: streamcamserver-models:test
+        run: |
+          set -e
+          docker compose up -d
+
+          for i in {1..30}; do
+            if curl -kfsS https://127.0.0.1:8080 > /dev/null; then
+              echo "Compose smoke test passed"
+              docker compose logs app
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Compose smoke test failed"
+          docker compose logs
+          exit 1
+
+      - name: Cleanup smoke test stack
+        if: always()
+        run: docker compose down -v
 
   build-and-push:
     runs-on: ubuntu-latest
@@ -65,54 +98,65 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # This step does not build anything.
-      # It generates Docker image metadata that later steps reuse, including:
-      # - the full image name: <dockerhub-username>/streamcamserver
-      # - the tag list: currently just "latest"
-      # - standard OCI labels attached to the image
-      - name: Extract Docker metadata
-        id: meta
+      - name: Extract app image metadata
+        id: meta_app
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.APP_IMAGE_NAME }}
           tags: |
             type=raw,value=latest
+            type=sha
 
-      # This is the step that actually builds and pushes the Docker image.
-      # - context: . tells Docker to build from the repository root
-      # - the default Dockerfile path is ./Dockerfile
-      # - tags comes from the metadata step above
-      # - push: true uploads the built image to Docker Hub using the login from earlier
-      - name: Build and push Docker image
+      - name: Extract models image metadata
+        id: meta_models
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.MODELS_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha
+
+      - name: Build and push app image
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ./Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta_app.outputs.tags }}
+          labels: ${{ steps.meta_app.outputs.labels }}
 
-      # Validate the published image by pulling it from Docker Hub,
-      # starting a container, and checking the HTTPS endpoint.
-      - name: Verify published Docker image
+      - name: Build and push models image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.models
+          push: true
+          tags: ${{ steps.meta_models.outputs.tags }}
+          labels: ${{ steps.meta_models.outputs.labels }}
+
+      - name: Verify published Docker images together
+        env:
+          APP_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.APP_IMAGE_NAME }}:latest
+          MODELS_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.MODELS_IMAGE_NAME }}:latest
         run: |
           set -e
-          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
-          docker pull "$IMAGE"
-          docker run -d --name streamcamserver-ci -p 5000:5000 "$IMAGE"
+          docker pull "$APP_IMAGE"
+          docker pull "$MODELS_IMAGE"
+          docker compose up -d
 
-          for i in {1..20}; do
-            if curl -kfsS https://127.0.0.1:5000 > /dev/null; then
+          for i in {1..30}; do
+            if curl -kfsS https://127.0.0.1:8080 > /dev/null; then
               echo "Published image health check passed"
-              docker logs streamcamserver-ci
+              docker compose logs app
               exit 0
             fi
             sleep 2
           done
 
           echo "Published image health check failed"
-          docker logs streamcamserver-ci
+          docker compose logs
           exit 1
 
-      - name: Cleanup test container
+      - name: Cleanup published image stack
         if: always()
-        run: docker rm -f streamcamserver-ci || true
+        run: docker compose down -v

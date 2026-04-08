@@ -8,3 +8,8 @@ __pycache__
 .venv*
 venv
 received_frame.jpg
+.vscode
+.ipynb_checkpoints
+data/face-mask-detection
+notebooks/exports
+notebooks/checkpoints

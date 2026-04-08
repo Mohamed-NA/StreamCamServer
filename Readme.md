@@ -1,134 +1,231 @@
-# WebSocket Secure (WSS) Camera Stream Application
+# StreamCamServer
 
-[![Test and Publish Docker Image](https://github.com/MohamedEshmawy/StreamCamServer/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/MohamedEshmawy/StreamCamServer/actions/workflows/docker-publish.yml)
+Real-time browser camera streaming over HTTPS/WSS with server-side mask detection and hot-swappable inference models.
 
-This project provides a secure, real-time camera streaming application using Flask and WebSockets over HTTPS (WSS).
+The app serves a web UI, receives webcam frames over Socket.IO, runs inference on the server, and sends back an annotated frame plus structured detections.
 
----
+## What It Supports
 
-## **Docker Support**
+- `MobileNetV2` TFLite classifier
+- `ViT Base` ONNX classifier
+- `Faster R-CNN` ONNX detector
+- live model switching from the UI
+- HTTPS + WSS with local certificates
+- notebook workflow for training and ONNX export
 
-Build the container locally:
-
-```bash
-docker build -t streamcamserver:local .
-```
-
-The image already includes the certificates from the repository, so you can run it directly:
-
-```bash
-docker run --rm -p 5000:5000 streamcamserver:local
-```
-
-## **GitHub Actions Docker Publish Workflow**
-
-This repository now includes a workflow at `.github/workflows/docker-publish.yml` that:
-
-1. Runs the smoke test on every push to any branch.
-2. Pushes a Docker image only on pushes to `main` (for example, after a PR is merged).
-3. Lets you manually trigger a test-and-push run from the **Actions** tab on any branch.
-
-### **Required GitHub Secrets**
-
-Add these repository secrets in GitHub under **Settings > Secrets and variables > Actions**:
-
-- `DOCKERHUB_USERNAME`: your Docker Hub username.
-- `DOCKERHUB_TOKEN`: a Docker Hub personal access token.
-
-### **How to Create the Docker Hub Token**
-
-1. Sign in to Docker Hub.
-2. Open **Account Settings > Personal access tokens**.
-3. Create a new token with write access to your repositories.
-4. Copy that token and save it as the `DOCKERHUB_TOKEN` GitHub secret.
-
-The workflow pushes images to:
+## Project Layout
 
 ```text
-docker.io/<DOCKERHUB_USERNAME>/streamcamserver:latest
+.
+├── server.py                      # Flask + Socket.IO server
+├── model_manager.py               # model loading, switching, inference, drawing
+├── models.json                    # model registry and active default
+├── notebooks/
+│   └── mask_detector_4_DEBI.ipynb # training + export notebook
+├── model/                         # runtime model artifacts used by the server
+├── data/                          # local dataset storage (gitignored)
+├── templates/
+├── static/
+└── certificates/
 ```
 
-Each successful publish updates the `latest` tag.
+## Requirements
 
-To manually trigger the workflow:
+- Python `3.12`
+- `uv`
+- local certificate files at:
+  - `certificates/certificate.crt`
+  - `certificates/private.key`
 
-1. Open the repository on GitHub.
-2. Go to **Actions**.
-3. Select **Test and Publish Docker Image**.
-4. Click **Run workflow** and choose the branch you want.
+For the Faster R-CNN notebook section, your Python build must support `lzma` so `torchvision` imports cleanly.
 
-If a pull request comes from a fork, GitHub does not expose repository secrets to that run, so the Docker push step will not be able to authenticate to Docker Hub.
+## Setup
 
-## **Steps to Set Up the Application**
+Create the environment and install project dependencies:
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/MohamedEshmawy/StreamCamServer
-   cd StreamCamServer
-   ```
+```bash
+uv sync --group notebook
+```
 
-2. Create a virtual environment:
-   ```bash
-   python -m venv .venv
-   ```
+Use the project environment for everything:
 
-3. Activate the virtual environment:
+```bash
+uv run python --version
+```
 
-   Linux/macOS (bash/zsh):
-   ```bash
-   source .venv/bin/activate
-   ```
+For Jupyter:
 
-   Windows (PowerShell):
-   ```powershell
-   .venv\Scripts\Activate.ps1
-   ```
+```bash
+uv run --group notebook jupyter lab
+```
 
-   Windows (Command Prompt):
-   ```cmd
-   .venv\Scripts\activate.bat
-   ```
+## Running The Server
 
-4. Install the required dependencies:
-   ```bash
-   python -m pip install -r requirements.txt
-   ```
+Start the app with the project environment:
 
-5. Install OpenSSL on Windows (if applicable):
-   - **Install via Precompiled Binaries**:
-     - Download OpenSSL for Windows from [Shining Light Productions](https://slproweb.com/products/Win32OpenSSL.html).
-     - Add OpenSSL to your system's `PATH` environment variable.
+```bash
+uv run python server.py
+```
 
-   - **Verify Installation**:
-     - Open a terminal and run:
-       ```bash
-       openssl version
-       ```
-     - You should see the installed OpenSSL version.
+The server listens on:
 
-6. Generate SSL certificates:
-   - Open a terminal in the project directory.
-   - Run the following command to create the certificates in the `certificates/` folder:
-     ```bash
-     mkdir certificates
-     openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-         -keyout certificates/private.key \
-         -out certificates/certificate.crt
-     ```
-   - You will be prompted to provide details such as country, organization name, etc. leave them blank for development purposes.
-   - The private key will be saved as `certificates/private.key`.
-   - The certificate will be saved as `certificates/certificate.crt`.
+- `https://0.0.0.0:8080`
 
-7. Start the Flask application with HTTPS and WebSocket Secure (WSS):
-   ```bash
-   python server.py
-   ```
+Open it in your browser at:
 
-8. Open the application in your browser:
-   - Navigate to:
-     ```
-     https://<your-domain-or-ip>:5000
-     ```
-   - The application should load, and the camera stream will be displayed.
+```text
+https://localhost:8080
+```
 
-Only port `5000` needs to be published for this app. HTTPS and WSS both use the same Flask-SocketIO listener, so there is no separate HTTP server on port `80` in the current implementation.
+## Docker
+
+This repo now supports a split container layout:
+
+- `streamcamserver-app`: server + UI
+- `streamcamserver-models`: runtime model bundle
+
+The app container keeps the current UI model chooser by reading all model files from a shared Docker volume mounted at `/app/model`.
+
+### Build Local Images
+
+```bash
+docker build -t streamcamserver-app:local .
+docker build -f Dockerfile.models -t streamcamserver-models:local .
+```
+
+### Run With Compose
+
+```bash
+docker compose up
+```
+
+That starts:
+
+- a `models` init container that copies model files into a named Docker volume
+- an `app` container that mounts the same volume and serves the UI on `https://localhost:8080`
+- the app image uses the bundled `certificates/` directory by default
+
+## Certificates
+
+If you do not already have local certs, create them with:
+
+```bash
+mkdir -p certificates
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout certificates/private.key \
+  -out certificates/certificate.crt
+```
+
+## Models
+
+The server reads model definitions from [models.json](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/models.json).
+
+Configured models:
+
+- `mobilenet`: TFLite 2-class classifier
+- `vit`: ONNX 3-class classifier
+- `faster_rcnn`: ONNX detector
+
+At runtime:
+
+- `GET /api/models` returns model availability and active state
+- Socket event `switch_model` swaps the active model
+- Socket event `video_frame` sends a frame to the server
+
+## Notebook Workflow
+
+The notebook is:
+
+- [mask_detector_4_DEBI.ipynb](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/notebooks/mask_detector_4_DEBI.ipynb)
+
+It is set up to:
+
+- require the repo `.venv`
+- download the Kaggle dataset
+- copy the dataset into:
+  - `data/face-mask-detection`
+- remove the temporary KaggleHub cache copy after the local copy is created
+- train the ViT classifier
+- train the Faster R-CNN detector
+- export ONNX models into `notebooks/exports`
+- copy exported models into `model/`
+
+Dataset contents are intentionally gitignored.
+
+## Expected Model Files
+
+The server can run with the following files in `model/`:
+
+- `model.tflite`
+- `vit_model.onnx`
+- `faster_rcnn.onnx`
+
+If an ONNX model is missing, it will show as unavailable in the UI and API.
+
+## Docker Hub Workflow
+
+If you publish both images to Docker Hub, users can run the full stack without cloning the repo.
+
+Pull:
+
+```bash
+docker pull <dockerhub-user>/streamcamserver-app:latest
+docker pull <dockerhub-user>/streamcamserver-models:latest
+```
+
+Run with Compose:
+
+```bash
+APP_IMAGE=<dockerhub-user>/streamcamserver-app:latest \
+MODELS_IMAGE=<dockerhub-user>/streamcamserver-models:latest \
+docker compose up
+```
+
+The current UI model chooser will still work because the app container sees all model files locally in the shared volume.
+
+## Development Notes
+
+- Use `uv`, not `pip`, for environment management in this repo.
+- The notebook and pyright config are set up for the repo-local `.venv`.
+- `data/face-mask-detection/` is ignored and should not be committed.
+- The app image is code-only and expects model files from the shared `/app/model` volume.
+- The models image publishes runtime artifacts separately from the server/UI image.
+
+## Common Commands
+
+Sync dependencies:
+
+```bash
+uv sync --group notebook
+```
+
+Run the server:
+
+```bash
+uv run python server.py
+```
+
+Open Jupyter:
+
+```bash
+uv run --group notebook jupyter lab
+```
+
+Verify the runtime environment:
+
+```bash
+./.venv/bin/python -c "import cv2, numpy, flask, flask_socketio; print('ok')"
+```
+
+Build split Docker images:
+
+```bash
+docker build -t streamcamserver-app:local .
+docker build -f Dockerfile.models -t streamcamserver-models:local .
+```
+
+Run split Docker stack:
+
+```bash
+docker compose up
+```

@@ -1,21 +1,28 @@
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy
 
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+    && apt-get install -y --no-install-recommends curl libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+ENV PATH="/root/.local/bin:/app/.venv/bin:${PATH}"
 
-COPY . .
+COPY pyproject.toml uv.lock ./
 
-EXPOSE 5000
+RUN uv sync --frozen --no-dev
 
-CMD ["python", "server.py"]
+COPY server.py model_manager.py models.json ./
+COPY templates ./templates
+COPY static ./static
+COPY certificates ./certificates
+
+EXPOSE 8080
+
+CMD ["uv", "run", "python", "server.py"]

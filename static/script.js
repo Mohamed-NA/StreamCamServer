@@ -26,6 +26,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const qualityDisp  = document.getElementById('quality-display');
     const resDisplay   = document.getElementById('res-display');
     const logEl        = document.getElementById('log');
+    const modelList    = document.getElementById('model-list');
+    const modelStatus  = document.getElementById('model-switching');
 
     // State
     let frameCount  = 0;
@@ -218,6 +220,58 @@ document.addEventListener('DOMContentLoaded', () => {
                 <span>${r.label} &nbsp; ${(r.confidence * 100).toFixed(0)}%</span>
             </div>`
         ).join('') || '<div class="det-empty">No faces detected</div>';
+    });
+
+    // ── Model selector ──
+    let activeModelId = null;
+
+    function renderModels(models) {
+        modelList.innerHTML = '';
+        models.forEach(m => {
+            const btn = document.createElement('button');
+            btn.className = 'model-item' + (m.active ? ' active' : '');
+            btn.disabled  = !m.available;
+            btn.dataset.id = m.id;
+
+            const dotClass = m.active ? 'active-dot' : (m.available ? 'available' : '');
+            btn.innerHTML = `
+                <div class="model-dot ${dotClass}"></div>
+                <div class="model-info">
+                    <div class="model-name">${m.name}</div>
+                    <div class="model-desc">${m.description}${m.available ? '' : ' · not found'}</div>
+                </div>`;
+            modelList.appendChild(btn);
+
+            if (m.active) activeModelId = m.id;
+        });
+    }
+
+    // Fetch initial model list
+    fetch('/api/models')
+        .then(r => r.json())
+        .then(renderModels)
+        .catch(() => { modelList.innerHTML = '<div class="det-empty">Could not load models</div>'; });
+
+    // Click → switch model
+    modelList.addEventListener('click', e => {
+        const btn = e.target.closest('.model-item');
+        if (!btn || btn.disabled || btn.dataset.id === activeModelId) return;
+        modelStatus.textContent = `Switching to ${btn.querySelector('.model-name').textContent}…`;
+        socket.emit('switch_model', btn.dataset.id);
+    });
+
+    // Server confirms switch
+    socket.on('model_changed', data => {
+        if (data.ok) {
+            activeModelId = data.id;
+            modelStatus.textContent = '';
+            log(`Model → ${data.name}`, 'success');
+            // Re-fetch to refresh availability + active state
+            fetch('/api/models').then(r => r.json()).then(renderModels);
+        } else {
+            modelStatus.textContent = '';
+            log(`Model switch failed: ${data.error}`, 'error');
+        }
     });
 
     // ── Socket ──

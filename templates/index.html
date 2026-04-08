@@ -429,6 +429,79 @@
             color: #a5b4fc;
         }
 
+        /* ── Model selector ── */
+        .model-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .model-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 10px;
+            border-radius: 9px;
+            border: 1px solid var(--border);
+            background: transparent;
+            cursor: pointer;
+            transition: all 0.18s;
+            text-align: left;
+            width: 100%;
+            color: var(--text);
+        }
+
+        .model-item:hover:not(:disabled) {
+            border-color: rgba(99,102,241,0.35);
+            background: var(--accent-dim);
+        }
+
+        .model-item.active {
+            border-color: rgba(99,102,241,0.5);
+            background: var(--accent-dim);
+        }
+
+        .model-item:disabled {
+            opacity: 0.38;
+            cursor: not-allowed;
+        }
+
+        .model-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: #334155;
+        }
+
+        .model-dot.available  { background: var(--success); }
+        .model-dot.active-dot { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+
+        .model-info { flex: 1; min-width: 0; }
+
+        .model-name {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .model-desc {
+            font-size: 0.65rem;
+            color: var(--muted);
+            margin-top: 1px;
+        }
+
+        .model-switching {
+            font-size: 0.68rem;
+            color: var(--accent);
+            text-align: center;
+            padding: 4px 0 2px;
+            min-height: 1.2em;
+        }
+
         /* Activity log */
         .log {
             display: flex;
@@ -581,6 +654,15 @@
                             <div class="stat-value" id="state-display" style="font-size:0.75rem;padding-top:3px">—</div>
                         </div>
                     </div>
+                </div>
+
+                <!-- Model selector -->
+                <div class="panel" id="model-panel">
+                    <div class="panel-title">Model</div>
+                    <div class="model-list" id="model-list">
+                        <div class="det-empty">Loading models…</div>
+                    </div>
+                    <div class="model-switching" id="model-switching"></div>
                 </div>
 
                 <!-- Controls -->
