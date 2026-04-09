@@ -113,7 +113,8 @@ jobs:
             --pattern "model-bundle.tar.gz" \
             --pattern "model-bundle.tar.gz.sha256" \
             --dir dist
-          sha256sum -c dist/model-bundle.tar.gz.sha256
+          cd dist
+          sha256sum -c model-bundle.tar.gz.sha256
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
