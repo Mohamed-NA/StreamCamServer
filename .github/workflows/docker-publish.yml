@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - "**"
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       release_tag:
@@ -59,7 +61,7 @@ jobs:
   build-and-push-app:
     runs-on: ubuntu-latest
     needs: test
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Check out repository
@@ -82,6 +84,7 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha
+            type=ref,event=tag
 
       - name: Build and push app image
         uses: docker/build-push-action@v6
@@ -95,7 +98,7 @@ jobs:
   build-and-push-models:
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
 
@@ -103,10 +106,27 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Resolve release tag
+        id: release_tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -n "${{ inputs.release_tag }}" ]; then
+              echo "value=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+            else
+              echo "value=$(gh release view --json tagName --jq .tagName)" >> "$GITHUB_OUTPUT"
+            fi
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$(gh release view --json tagName --jq .tagName)" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download model bundle from GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG: ${{ steps.release_tag.outputs.value }}
         run: |
           mkdir -p dist
           gh release download "$RELEASE_TAG" \
@@ -131,9 +151,10 @@ jobs:
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.MODELS_IMAGE_NAME }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable={{is_default_branch}}
             type=sha
-            type=raw,value=${{ inputs.release_tag }}
+            type=raw,value=${{ steps.release_tag.outputs.value }}
+            type=ref,event=tag
 
       - name: Build and push models image
         uses: docker/build-push-action@v6
