@@ -3,5 +3,8 @@
   "python.analysis.venvPath": "${workspaceFolder}",
   "python.analysis.venv": ".venv",
   "jupyter.jupyterServerType": "local",
-  "jupyter.interactiveWindow.kernelStartupTimeout": 120
+  "jupyter.interactiveWindow.kernelStartupTimeout": 120,
+  "githubPullRequests.ignoredPullRequestBranches": [
+    "main"
+  ]
 }

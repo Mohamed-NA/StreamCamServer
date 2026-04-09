@@ -138,6 +138,10 @@ The notebook is:
 
 - [mask_detector_4_DEBI.ipynb](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/notebooks/mask_detector_4_DEBI.ipynb)
 
+For Google Colab, use:
+
+- [train_in_colab.ipynb](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/notebooks/train_in_colab.ipynb)
+
 It is set up to:
 
 - require the repo `.venv`
@@ -151,6 +155,18 @@ It is set up to:
 - copy exported models into `model/`
 
 Dataset contents are intentionally gitignored.
+
+## Script Training
+
+You can run training outside Jupyter with:
+
+```bash
+uv run python train_models.py vit
+uv run python train_models.py rcnn
+uv run python train_models.py all
+```
+
+The script defaults to `--workers 2`, which is a safer baseline for a laptop workflow than using aggressive notebook multiprocessing.
 
 ## Expected Model Files
 
@@ -209,6 +225,12 @@ Open Jupyter:
 
 ```bash
 uv run --group notebook jupyter lab
+```
+
+Run training as a script:
+
+```bash
+uv run python train_models.py all
 ```
 
 Verify the runtime environment:
