@@ -15,18 +15,50 @@ This repo uses a split image layout:
 - `streamcamserver-app`: code, UI, config, certificates
 - `streamcamserver-models`: runtime model bundle only
 
-If the images are already published, the fastest path is:
+If the images are already published, outside users do not need this repo at all.
+
+Create a `compose.yaml` in any folder with:
+
+```yaml
+services:
+  models:
+    image: iroyal9/streamcamserver-models:latest
+    restart: "no"
+    volumes:
+      - models-data:/shared-models
+
+  app:
+    image: iroyal9/streamcamserver-app:latest
+    depends_on:
+      models:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    volumes:
+      - models-data:/app/model:ro
+
+volumes:
+  models-data:
+```
+
+Then run:
 
 ```bash
-APP_IMAGE=iroyal9/streamcamserver-app:latest \
-MODELS_IMAGE=iroyal9/streamcamserver-models:latest \
-docker compose -f infra/docker/compose.yaml up
+docker compose up
 ```
 
 The stack serves the app on:
 
 ```text
 https://localhost:8080
+```
+
+If you already cloned the repo, you can also run:
+
+```bash
+APP_IMAGE=iroyal9/streamcamserver-app:latest \
+MODELS_IMAGE=iroyal9/streamcamserver-models:latest \
+docker compose -f infra/docker/compose.yaml up
 ```
 
 ### New Device Setup
