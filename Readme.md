@@ -4,6 +4,53 @@ Real-time browser camera streaming over HTTPS/WSS with server-side mask detectio
 
 The app serves a web UI, receives webcam frames over Socket.IO, runs inference on the server, and returns an annotated frame plus structured detections.
 
+## Quick Start
+
+If you just want to run the app on a new device, use Docker first.
+
+### Docker First
+
+This repo uses a split image layout:
+
+- `streamcamserver-app`: code, UI, config, certificates
+- `streamcamserver-models`: runtime model bundle only
+
+If the images are already published, the fastest path is:
+
+```bash
+APP_IMAGE=iroyal9/streamcamserver-app:latest \
+MODELS_IMAGE=iroyal9/streamcamserver-models:latest \
+docker compose -f infra/docker/compose.yaml up
+```
+
+The stack serves the app on:
+
+```text
+https://localhost:8080
+```
+
+### New Device Setup
+
+For a new machine, choose one of these paths:
+
+1. Docker only
+   - use the published app image and models image
+   - run the compose stack
+2. Repo + model bundle
+   - clone the repo
+   - install dependencies
+   - download `model-bundle.tar.gz` from GitHub Releases
+   - install it into `model/`
+   - run the server locally
+
+Repo + bundle commands:
+
+```bash
+uv sync --group notebook
+uv run scripts/install_model_bundle.py dist/model-bundle.tar.gz
+uv run scripts/run_server.py
+```
+
 ## Project Layout
 
 ```text
@@ -54,7 +101,7 @@ The active/default registry lives in [config/models.json](/Users/nasser/ettbtm/w
 
 For training and export, install the notebook dependency group.
 
-## Setup
+## Local Development Setup
 
 ```bash
 uv sync --group notebook
@@ -134,11 +181,6 @@ gh release upload v1.0.0 dist/model-bundle.tar.gz dist/model-bundle.tar.gz.sha25
 ```
 
 ## Docker
-
-This repo uses a split image layout:
-
-- `streamcamserver-app`: code, UI, config, certificates
-- `streamcamserver-models`: runtime model bundle only
 
 The models image now builds from `dist/model-bundle.tar.gz`, not directly from tracked files in `model/`.
 
