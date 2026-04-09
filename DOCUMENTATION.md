@@ -1,656 +1,257 @@
-# StreamCamServer — Full Project Documentation
+# StreamCamServer Documentation
 
-## Table of Contents
+## Overview
 
-1. [Project Overview](#1-project-overview)
-2. [Architecture](#2-architecture)
-3. [File Structure](#3-file-structure)
-4. [Backend (server.py)](#4-backend-serverpy)
-5. [Frontend (index.html + script.js)](#5-frontend-indexhtml--scriptjs)
-6. [Machine Learning Component](#6-machine-learning-component)
-7. [Dependencies](#7-dependencies)
-8. [Configuration Files](#8-configuration-files)
-9. [Security & SSL](#9-security--ssl)
-10. [Docker & Deployment](#10-docker--deployment)
-11. [CI/CD Pipeline](#11-cicd-pipeline)
-12. [End-to-End Workflow](#12-end-to-end-workflow)
-13. [Running the Project](#13-running-the-project)
+StreamCamServer is a Flask + Socket.IO application for browser-based webcam streaming with server-side mask inference. The browser captures frames, sends them to the server over WSS, and receives back an annotated frame plus structured detections.
 
----
+The project supports three runtime models:
 
-## 1. Project Overview
+- `mobilenet`: TensorFlow Lite classifier
+- `vit`: ONNX Runtime classifier
+- `faster_rcnn`: ONNX Runtime detector
 
-StreamCamServer is a **real-time WebSocket-based camera streaming server** with integrated **face mask detection** using machine learning. A web client captures frames from the user's camera and streams them to a Python Flask server, which runs face detection and mask classification on each frame, then returns annotated results back to the browser in near real-time.
+Model definitions and the active default are configured in [config/models.json](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/config/models.json).
 
-**Key capabilities**:
+## Current Structure
 
-- Live camera streaming from browser to server via WebSocket over TLS (WSS)
-- Server-side face detection using OpenCV Haar Cascade
-- Per-face mask classification using a TensorFlow Lite MobileNetV2 model
-- Annotated frame returned to the browser with bounding boxes and labels
-- Configurable frame rate, JPEG quality, and video resolution
-- Fully containerized with Docker, with a GitHub Actions CI/CD pipeline
-
----
-
-## 2. Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Web Browser (Client)                     │
-│                                                                 │
-│  getUserMedia API ──→ Local Canvas ──→ JPEG Encode ──→ Base64   │
-│                                                        |        |
-│  Display Canvas ←── Annotated Frame (Base64) ←─────────┘        |
-│  Detection Panel ←── Detections JSON                            |
-└───────────────────────────── WebSocket (WSS) ───────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     Flask + Flask-SocketIO Server               │
-│                                                                 │
-│  Frame Decode ──→ OpenCV Haar Cascade (Face Detection)         │
-│                          │                                      │
-│                     For each face:                              │
-│                     └──→ Crop + Resize (224×224)               │
-│                          └──→ Normalize → TFLite Inference     │
-│                               └──→ Class + Confidence          │
-│                                                                 │
-│  Annotate Frame ──→ Encode JPEG ──→ Emit server_frame          │
-│  Build JSON ──→ Emit detections                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**Communication model**: The client sends one frame and waits for the server to respond before sending the next. This **ack-based flow control** prevents the WebSocket queue from filling up under a slow server or heavy inference load.
-
----
-
-## 3. File Structure
-
-```
-StreamCamServer/
-├── server.py                          # Flask application — all backend logic
-├── pyproject.toml                     # Project metadata and Python dependencies
-├── uv.lock                            # Locked dependency graph (uv package manager)
-├── .python-version                    # Pins Python version to 3.13
-├── Dockerfile                         # Container build instructions
-├── .dockerignore                      # Files excluded from Docker context
-├── .gitignore                         # Files excluded from git
-├── LICENSE                            # MIT License
-├── Readme.md                          # Quick-start guide
-│
+```text
+.
+├── streamcamserver/
+│   ├── app.py                      # Flask app + Socket.IO handlers
+│   ├── inference.py                # model loading and inference backends
+│   ├── paths.py                    # shared project paths
+│   └── training/
+│       ├── data.py                 # Faster R-CNN dataset helpers
+│       ├── train.py                # scriptable training entrypoint
+│       └── export.py               # ONNX export logic
+├── scripts/
+│   ├── run_server.py               # launcher
+│   ├── train_models.py             # training CLI
+│   ├── export_models.py            # export CLI
+│   ├── package_model_bundle.py     # release bundle packager
+│   └── install_model_bundle.py     # local bundle installer
+├── config/
+│   └── models.json
+├── model/                          # unpacked local runtime artifacts
+├── infra/docker/
+│   ├── Dockerfile.app
+│   ├── Dockerfile.models
+│   ├── compose.yaml
+│   └── copy_models.sh
+├── notebooks/
+│   ├── mask_detector_4_DEBI.ipynb
+│   └── train_in_colab.ipynb
 ├── templates/
-│   └── index.html                     # Single-page UI (631 lines)
-│
 ├── static/
-│   └── script.js                      # WebSocket client + camera logic (237 lines)
-│
-├── model/
-│   ├── model.tflite                   # Pre-trained TFLite mask detection model (~9.8 MB)
-│   └── labels.txt                     # Class labels: WithMask, WithoutMask
-│
-├── certificates/
-│   ├── certificate.crt                # Self-signed SSL certificate
-│   └── private.key                    # SSL private key
-│
-├── notebooks/                         # Empty — reserved for Jupyter exploration
-├── covid-19-mask-detector.ipynb       # Training / exploration notebook
-│
-└── .github/
-    └── workflows/
-        └── docker-publish.yml         # GitHub Actions CI/CD pipeline
+└── certificates/
 ```
 
----
-
-## 4. Backend (server.py)
-
-The entire server is 98 lines of Python. It does four things: initializes the ML model, sets up Flask/SocketIO, handles incoming WebSocket frames, and serves the HTML page.
-
-### 4.1 Imports and Initialization
+## Runtime Architecture
 
-```python
-from flask import Flask, render_template
-from flask_socketio import SocketIO, emit
-import cv2, numpy as np, base64, ssl, tensorflow as tf
-```
+The app entrypoint is [scripts/run_server.py](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/scripts/run_server.py), which calls into [streamcamserver/app.py](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/streamcamserver/app.py).
 
-**TFLite model setup** runs at startup:
+At startup the server:
 
-```python
-interpreter = tf.lite.Interpreter(model_path="model/model.tflite")
-interpreter.allocate_tensors()
-input_details  = interpreter.get_input_details()
-output_details = interpreter.get_output_details()
-```
+1. Creates the Flask app and Socket.IO server
+2. Loads the model registry from [config/models.json](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/config/models.json)
+3. Instantiates the default model through [streamcamserver/inference.py](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/streamcamserver/inference.py)
+4. Serves the UI from [templates/index.html](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/templates/index.html) and [static/script.js](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/static/script.js)
 
-The model expects a `(1, 224, 224, 3)` float32 tensor and outputs a `(1, 2)` probability array.
+Frame flow:
 
-**Face detector setup**:
+1. Browser captures a frame from the webcam
+2. Browser sends the frame to the server with Socket.IO
+3. Server decodes the frame and runs the currently active backend
+4. Server emits the annotated frame and detection payload back to the client
 
-```python
-face_cascade = cv2.CascadeClassifier(
-    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-)
-```
-
-OpenCV ships with pre-trained Haar Cascade XML files. This uses the frontal face classifier bundled with the library.
-
-**Flask and SocketIO**:
-
-```python
-app = Flask(__name__)
-socketio = SocketIO(app, async_mode="threading", cors_allowed_origins="*")
-```
-
-`async_mode="threading"` is required when combining Flask-SocketIO with TensorFlow (which is not async-safe).
-
-### 4.2 `classify_face(face_bgr)` — ML inference
-
-```python
-def classify_face(face_bgr):
-    img = cv2.resize(face_bgr, (224, 224))
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = (img.astype(np.float32) / 127.5) - 1.0      # normalize to [-1, 1]
-    img = np.expand_dims(img, axis=0)                  # add batch dimension
-
-    interpreter.set_tensor(input_details[0]['index'], img)
-    interpreter.invoke()
-    output = interpreter.get_tensor(output_details[0]['index'])[0]
-
-    class_idx  = int(np.argmax(output))
-    confidence = float(output[class_idx])
-    label      = labels[class_idx]                     # "WithMask" or "WithoutMask"
-    return label, confidence
-```
-
-The normalization `(x / 127.5) - 1.0` maps pixel values from `[0, 255]` to `[-1, 1]`, which matches the preprocessing used during MobileNetV2 training.
-
-### 4.3 `handle_video_frame(data)` — WebSocket handler
-
-Triggered by the `video_frame` SocketIO event:
-
-1. **Decode**: Strip the `data:image/jpeg;base64,` prefix and decode to bytes, then to a numpy array with OpenCV.
-2. **Face detection**:
-   ```python
-   gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-   faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1,
-               minNeighbors=5, minSize=(60, 60))
-   ```
-3. **Per-face classification**: Call `classify_face()` on each detected face crop.
-4. **Annotation**: Draw colored rectangles and label text on the frame.
-   - Green (`(0, 255, 0)`) for `WithMask`
-   - Red (`(0, 0, 255)`) for `WithoutMask`
-5. **Save debug frame**: Write annotated frame to `received_frame.jpg`.
-6. **Emit results** back to the caller:
-   ```python
-   emit('server_frame', {'frame': encoded_frame})
-   emit('detections',   {'detections': detections_list})
-   ```
-
-### 4.4 Routes and Server Start
-
-```python
-@app.route('/')
-def index():
-    return render_template('index.html')
-```
-
-```python
-ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-ssl_context.load_cert_chain('certificates/certificate.crt',
-                             'certificates/private.key')
-
-socketio.run(app, host='0.0.0.0', port=8080,
-             ssl_context=ssl_context, allow_unsafe_werkzeug=True)
-```
-
-The server listens on all interfaces at port `8080` with HTTPS/WSS enabled.
-
----
-
-## 5. Frontend (index.html + script.js)
-
-### 5.1 Layout (index.html)
-
-The UI is a single HTML file rendered by Flask's Jinja2 engine (no dynamic template variables are used — the file is purely static HTML/CSS/JS served through Flask).
-
-**Visual structure** (CSS Grid):
-
-```
-┌──────────────────────────────────────────────┐
-│  Header: "StreamCam" logo + connection badge │
-├──────────────────────┬───────────────────────┤
-│                      │  Detection Stats      │
-│   Video Canvas       │  ─ Faces detected     │
-│   (with REC badge    │  ─ With mask          │
-│    and pause button) │  ─ Without mask       │
-│                      │                       │
-│                      │  Controls Panel       │
-│                      │  ─ FPS slider         │
-│                      │  ─ Quality slider     │
-│                      │  ─ Resolution picker  │
-│                      │                       │
-│                      │  Activity Log         │
-├──────────────────────┴───────────────────────┤
-│  Footer: copyright + resolution display      │
-└──────────────────────────────────────────────┘
-```
+## Model Backends
 
-**Visual design**:
-- Dark background (`#070a10`)
-- Indigo accent (`#6366f1`)
-- Glassmorphism panels (backdrop blur + subtle border)
-- Pulsing connection indicator
-- Blinking REC badge while streaming
+Runtime loading lives in [streamcamserver/inference.py](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/streamcamserver/inference.py).
 
-### 5.2 Camera Capture (script.js)
+Supported backends:
 
-```javascript
-const stream = await navigator.mediaDevices.getUserMedia({
-    video: { width: { ideal: resW }, height: { ideal: resH } }
-});
-video.srcObject = stream;
-```
-
-Resolution options:
-- 240p → 426×240
-- 480p → 640×480 (default)
-- 720p → 1280×720
-
-### 5.3 Frame Sending Loop
-
-```javascript
-async function sendFrame() {
-    if (paused || !socket.connected) return;
-
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL('image/jpeg', quality / 100);
-
-    socket.emit('video_frame', dataUrl, () => {
-        // ack received — schedule next frame
-        setTimeout(sendFrame, 1000 / targetFps);
-    });
-}
-```
-
-The callback-based acknowledgement creates a natural back-pressure mechanism: the next frame is only scheduled after the server has processed the current one.
-
-### 5.4 Receiving Server Results
-
-```javascript
-socket.on('server_frame', (data) => {
-    serverImg.src = data.frame;       // replace canvas with annotated frame
-    frameCount++;
-});
-
-socket.on('detections', (data) => {
-    updateDetectionPanel(data.detections);   // update sidebar stats
-});
-```
-
-### 5.5 UI State Machine
-
-| State | Description |
-|-------|-------------|
-| `disconnected` | Socket not connected, no camera |
-| `connecting` | Socket connecting or camera permission pending |
-| `connected` | Socket live, stream not yet started |
-| `live` | Sending frames, receiving results |
-| `paused` | Stream suspended by user |
-| `error` | Camera denied or socket error |
-
-The connection badge and REC indicator update to reflect the current state.
-
-### 5.6 User Controls
-
-| Control | Range | Default | Effect |
-|---------|-------|---------|--------|
-| FPS slider | 1–30 fps | 15 fps | Inter-frame delay = 1000 / fps ms |
-| Quality slider | 10–100% | 80% | JPEG compression level |
-| Resolution picker | 240p / 480p / 720p | 480p | Restarts camera stream |
-| Pause button | toggle | — | Stops/resumes frame sending |
-
-### 5.7 Activity Log
-
-A timestamped list of events (max 30 entries) shown in the sidebar:
-
-- Camera started / stopped
-- Stream paused / resumed
-- Connection established / lost
-- Errors (permission denied, camera unavailable)
-
----
-
-## 6. Machine Learning Component
-
-### 6.1 Model Architecture
-
-The model is a **MobileNetV2**-based binary classifier fine-tuned for face mask detection. MobileNetV2 was chosen because:
-- It is lightweight (~9.8 MB as TFLite)
-- Fast enough for real-time inference on CPU
-- Pre-trained on ImageNet, requiring less data to fine-tune
-
-The training process is documented in `covid-19-mask-detector.ipynb`.
-
-### 6.2 Classes
-
-`model/labels.txt`:
-```
-WithMask
-WithoutMask
-```
-
-### 6.3 Inference Pipeline
-
-```
-Face crop (BGR numpy array)
-      │
-      ▼
-cv2.resize → (224, 224)
-      │
-      ▼
-cvtColor BGR → RGB
-      │
-      ▼
-Normalize: (pixel / 127.5) - 1.0  →  float32 in [-1, 1]
-      │
-      ▼
-Expand dims → shape (1, 224, 224, 3)
-      │
-      ▼
-TFLite interpreter.invoke()
-      │
-      ▼
-Output tensor shape (1, 2) → [p_WithMask, p_WithoutMask]
-      │
-      ▼
-argmax → class index
-confidence = output[class_index]
-label = labels[class_index]
-```
+- `tflite`
+  - used for the MobileNetV2 classifier
+- `onnx`
+  - used for the ViT classifier
+  - used for the Faster R-CNN detector
 
-### 6.4 Face Detector
+The config file declares:
 
-Haar Cascade (`haarcascade_frontalface_default.xml`) parameters used:
+- model id
+- backend
+- type (`classifier` or `detector`)
+- runtime path
+- class labels
+- preprocessing mode
+- optional confidence threshold
 
-| Parameter | Value | Meaning |
-|-----------|-------|---------|
-| `scaleFactor` | 1.1 | Scale step between detection windows |
-| `minNeighbors` | 5 | Minimum overlapping rectangles to confirm detection |
-| `minSize` | (60, 60) | Ignore faces smaller than 60×60 pixels |
+## Training And Export
 
----
+Training and export code lives under [streamcamserver/training](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/streamcamserver/training).
 
-## 7. Dependencies
+Command entrypoints:
 
-### 7.1 Python Version
+- [scripts/train_models.py](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/scripts/train_models.py)
+- [scripts/export_models.py](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/scripts/export_models.py)
 
-The project requires **Python 3.13** (pinned in `.python-version` and `pyproject.toml`). The Docker image uses Python 3.12-slim.
+Training outputs:
 
-### 7.2 Direct Dependencies (`pyproject.toml`)
+- ViT checkpoints under `notebooks/vit-face-mask/`
+- Faster R-CNN checkpoints under `notebooks/checkpoints/`
 
-| Package | Version | Purpose |
-|---------|---------|---------|
-| `flask` | >=3.1.3 | Web framework and template rendering |
-| `flask-socketio` | >=5.6.1 | WebSocket event handling |
-| `numpy` | >=2.4.4 | Numerical array operations |
-| `opencv-python-headless` | >=4.13.0.92 | Image processing and face detection (no GUI) |
-| `tensorflow` | >=2.21.0 | TFLite interpreter for ML inference |
+Export outputs:
 
-### 7.3 Key Transitive Dependencies
+- ONNX runtime files copied into `model/`
 
-| Package | Purpose |
-|---------|---------|
-| `werkzeug` | WSGI server (Flask backend) |
-| `python-socketio` | SocketIO protocol implementation |
-| `python-engineio` | WebSocket/polling engine |
-| `simple-websocket` | WebSocket transport layer |
-| `keras` | High-level ML API (bundled with TensorFlow) |
+The local notebook and Colab notebook are wrappers around the same training/export logic, not a separate pipeline.
 
-### 7.4 Package Manager
+## Model Artifact Strategy
 
-The project uses **uv** (a fast Rust-based Python package manager) for dependency management. `uv.lock` pins every dependency's version and hash for reproducible installs.
+Runtime model binaries should not be kept in normal git history.
 
----
+Instead:
 
-## 8. Configuration Files
+1. Export runtime files into `model/`
+2. Package them with [scripts/package_model_bundle.py](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/scripts/package_model_bundle.py)
+3. Upload the archive to GitHub Releases
+4. Trigger the GitHub Actions models-image workflow with the release tag
+5. Download that archive when preparing a local runtime environment
 
-### 8.1 `pyproject.toml`
-
-Standard PEP 621 project metadata:
-
-```toml
-[project]
-name            = "streamcamserver"
-version         = "0.1.0"
-description     = "WebSocket camera streaming with mask detection"
-requires-python = ">=3.13"
-dependencies    = [
-    "flask>=3.1.3",
-    "flask-socketio>=5.6.1",
-    "numpy>=2.4.4",
-    "opencv-python-headless>=4.13.0.92",
-    "tensorflow>=2.21.0",
-]
-```
-
-### 8.2 `.python-version`
-
-```
-3.13
-```
-
-Used by `pyenv` and `uv` to auto-select the correct Python interpreter.
-
-### 8.3 `.gitignore`
-
-Excludes:
-- `__pycache__/`, `*.pyc`
-- `.venv*/`, `venv*/`
-- `.pytest_cache/`
-- `received_frame.jpg` (runtime output)
-
-### 8.4 `.dockerignore`
-
-Excludes the same patterns as `.gitignore` to keep the Docker build context minimal.
-
----
-
-## 9. Security & SSL
-
-### 9.1 Self-Signed Certificates
-
-```
-certificates/
-├── certificate.crt   (1245 bytes)
-└── private.key       (1704 bytes)
-```
-
-These are pre-generated self-signed certificates bundled with the repository for development convenience. **For production**, replace these with certificates from a trusted CA (e.g., Let's Encrypt).
-
-### 9.2 Why HTTPS/WSS is Required
-
-The browser's `getUserMedia` API that provides access to the camera is only available in **secure contexts** (HTTPS or localhost). Without SSL, the camera stream cannot be initiated at all — this is a browser security policy, not a server choice.
-
-### 9.3 SSL Context Setup
-
-```python
-ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-ssl_context.load_cert_chain(
-    'certificates/certificate.crt',
-    'certificates/private.key'
-)
-```
-
----
-
-## 10. Docker & Deployment
-
-### 10.1 Dockerfile
-
-```dockerfile
-FROM python:3.12-slim
-
-WORKDIR /app
-
-# Install OpenCV system dependencies
-RUN apt-get update && apt-get install -y \
-    libgl1 libglib2.0-0 && \
-    rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-EXPOSE 5000
-
-CMD ["python", "server.py"]
-```
-
-**Key notes**:
-- `libgl1` and `libglib2.0-0` are required at runtime by OpenCV (even the headless variant links against these system libraries)
-- The `EXPOSE 5000` declaration in the Dockerfile is informational; the actual Flask server binds to port `8080` inside the container
-
-### 10.2 Running Locally with Docker
+Bundle commands:
 
 ```bash
-# Build
-docker build -t streamcamserver .
-
-# Run (map container 8080 → host 5000)
-docker run -p 5000:8080 streamcamserver
-
-# Access
-open https://localhost:5000
+uv run scripts/package_model_bundle.py
+uv run scripts/install_model_bundle.py dist/model-bundle.tar.gz
 ```
 
-Accept the browser's self-signed certificate warning to proceed.
+The release bundle contains:
 
-### 10.3 Running Without Docker
+- runtime files from `model/`
+- [config/models.json](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/config/models.json)
+- `manifest.json`
+
+The manifest records the SHA-256 checksum of every bundled runtime file.
+
+Example release commands:
 
 ```bash
-# With uv (recommended)
-uv sync
-uv run python server.py
-
-# With pip
-pip install -r requirements.txt   # or use pyproject.toml
-python server.py
+gh release create v1.0.0 --title "v1.0.0" --notes "Runtime model bundle release"
+gh release upload v1.0.0 dist/model-bundle.tar.gz dist/model-bundle.tar.gz.sha256
 ```
 
----
+## Docker Layout
 
-## 11. CI/CD Pipeline
+Docker files live under [infra/docker](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/infra/docker).
 
-### 11.1 Trigger Conditions (`.github/workflows/docker-publish.yml`)
+### App Image
 
-| Event | Jobs Run |
-|-------|----------|
-| Push to any branch | `test` only |
-| Push to `main` | `test` + `build-and-push` |
-| Manual (`workflow_dispatch`) | `test` + `build-and-push` |
+[infra/docker/Dockerfile.app](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/infra/docker/Dockerfile.app):
 
-### 11.2 Test Job
+- installs project dependencies with `uv`
+- copies application code, config, templates, static assets, and certificates
+- starts the server via `python -m streamcamserver.app`
 
-Runs on every push. Steps:
-1. Checkout code
-2. Setup Python 3.12
-3. Install system dependencies (`libgl1`, `libglib2.0-0`) for OpenCV
-4. Install Python dependencies from `pyproject.toml`
-5. Smoke test — imports the server module and verifies `app` and `socketio` objects exist:
-   ```bash
-   python -c "from server import app, socketio; assert app; assert socketio"
-   ```
+The app image does not embed runtime models.
 
-### 11.3 Build & Push Job
+### Models Image
 
-Runs on `main` or manual dispatch. Steps:
-1. Checkout code
-2. Log in to Docker Hub using repository secrets:
-   - `DOCKERHUB_USERNAME`
-   - `DOCKERHUB_TOKEN`
-3. Set up Docker Buildx (multi-platform builder)
-4. Build and push image as `<username>/streamcamserver:latest`
-5. **Health check**: Pull the image, run a temporary container, and hit `https://localhost:5000` with curl (ignoring self-signed cert)
-6. **Cleanup**: Stop and remove the test container
+[infra/docker/Dockerfile.models](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/infra/docker/Dockerfile.models):
 
----
+- expects `dist/model-bundle.tar.gz` in the build context
+- extracts the bundle into `/models`
+- uses [infra/docker/copy_models.sh](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/infra/docker/copy_models.sh) to copy those files into a shared Docker volume
 
-## 12. End-to-End Workflow
+This keeps the model bundle separate from the app image and from the source repository history.
 
-```
-1. Browser → GET https://<host>:5000
-         ← server returns index.html
+### Compose
 
-2. Client JS → WebSocket handshake (wss://<host>:5000)
-         ← socket.on('connect')
+[infra/docker/compose.yaml](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/infra/docker/compose.yaml) starts:
 
-3. User clicks "Start Camera"
-   Client JS → getUserMedia({ video: true })
-         ← MediaStream
+- `models`
+  - one-shot init container
+  - copies unpacked runtime artifacts into the shared `models-data` volume
+- `app`
+  - serves the UI on `https://localhost:8080`
+  - mounts the shared volume at `/app/model`
 
-4. Streaming loop begins:
-   ┌─────────────────────────────────────────────────────────────┐
-   │ a. drawImage(video) onto canvas                             │
-   │ b. canvas.toDataURL('image/jpeg', quality)  → base64 JPEG  │
-   │ c. socket.emit('video_frame', base64data, ackCallback)      │
-   │                                                             │
-   │    Server receives 'video_frame':                           │
-   │    d. base64 decode → numpy array                           │
-   │    e. cv2.cvtColor → grayscale                              │
-   │    f. face_cascade.detectMultiScale() → face rectangles     │
-   │    g. for each face:                                        │
-   │         crop → resize 224×224 → normalize → TFLite.invoke  │
-   │         → label (WithMask/WithoutMask) + confidence         │
-   │    h. draw bounding boxes + labels on frame                 │
-   │    i. save to received_frame.jpg                            │
-   │    j. emit('server_frame', {frame: base64})                 │
-   │    k. emit('detections',   {detections: [...]})             │
-   │                                                             │
-   │    Client receives results:                                 │
-   │    l. socket.on('server_frame') → display annotated frame   │
-   │    m. socket.on('detections')  → update detection sidebar   │
-   │    n. ackCallback fires → schedule next frame after delay   │
-   └─────────────────────────────────────────────────────────────┘
+## Local Development
 
-5. User pauses → frame sending stops, REC badge goes static
-6. User resumes → loop restarts from step 4a
-```
-
----
-
-## 13. Running the Project
-
-### Prerequisites
-
-- Python 3.13+
-- `uv` package manager (or `pip`)
-- A modern browser (Chrome, Firefox, Edge)
-
-### Quick Start
+Install dependencies:
 
 ```bash
-# Clone
-git clone https://github.com/MohamedEshmawy/StreamCamServer.git
-cd StreamCamServer
-
-# Install dependencies
-uv sync
-
-# Start server
-uv run python server.py
+uv sync --group notebook
 ```
 
-Then open **https://localhost:8080** in your browser. Accept the self-signed certificate warning, then click **Start Camera**.
+Run the server:
 
-### Environment Notes
+```bash
+uv run scripts/run_server.py
+```
 
-- The server **must** run over HTTPS for `getUserMedia` to work (browser requirement)
-- All five Python packages must be installed — TensorFlow is the largest (~500 MB)
-- The `received_frame.jpg` file is created/overwritten by the server on every processed frame; it is excluded from git
+Run notebook tooling:
 
----
+```bash
+uv run --group notebook jupyter lab
+```
 
-*MIT License — MohamedEshmawy*
+Run training:
+
+```bash
+uv run scripts/train_models.py vit
+uv run scripts/train_models.py rcnn
+uv run scripts/train_models.py all
+```
+
+Run export:
+
+```bash
+uv run scripts/export_models.py all
+```
+
+Package the release bundle:
+
+```bash
+uv run scripts/package_model_bundle.py
+```
+
+## GitHub Releases Workflow
+
+Recommended flow:
+
+1. Train models locally or in Colab/Kaggle
+2. Export runtime files into `model/`
+3. Run `uv run scripts/package_model_bundle.py`
+4. Upload `dist/model-bundle.tar.gz` and `dist/model-bundle.tar.gz.sha256` to a GitHub Release
+5. Run the `Test and Publish Images` workflow manually and provide that release tag
+6. The workflow downloads the release asset into `dist/`
+7. The models image is built from that downloaded archive
+
+This gives you:
+
+- smaller source history
+- reproducible Docker image builds
+- explicit runtime artifact versioning
+
+## Certificates
+
+For local HTTPS/WSS, the app expects:
+
+- `certificates/certificate.crt`
+- `certificates/private.key`
+
+Generate self-signed development certificates if needed:
+
+```bash
+mkdir -p certificates
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout certificates/private.key \
+  -out certificates/certificate.crt
+```
+
+## Notes
+
+- `data/` is local-only and gitignored
+- notebook cache/checkpoint/export folders are gitignored
+- `model/` is for unpacked local runtime files, not tracked binaries
+- the release bundle is the source of truth for shipping runtime artifacts

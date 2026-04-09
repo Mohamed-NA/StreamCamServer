@@ -1,15 +1,21 @@
-name: Test and Publish Docker Images
+name: Test and Publish Images
 
 on:
   pull_request:
   push:
     branches:
-      - '**'
+      - "**"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "GitHub release tag to download the model bundle from before building the models image"
+        required: false
+        type: string
 
 env:
   APP_IMAGE_NAME: streamcamserver-app
   MODELS_IMAGE_NAME: streamcamserver-models
+  MODEL_BUNDLE_NAME: model-bundle.tar.gz
 
 jobs:
   test:
@@ -22,7 +28,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -37,47 +43,20 @@ jobs:
 
       - name: Smoke test application import
         run: |
-          uv run python -m compileall server.py model_manager.py
+          uv run python -m compileall scripts streamcamserver
           uv run python - <<'PY'
-          import server
+          from streamcamserver.app import app, socketio, model_mgr
 
-          assert server.app is not None
-          assert server.socketio is not None
-          print('Smoke test passed')
+          assert app is not None
+          assert socketio is not None
+          assert model_mgr.list_models()
+          print("Smoke test passed")
           PY
 
       - name: Build app image
-        run: docker build -t streamcamserver-app:test .
+        run: docker build -f infra/docker/Dockerfile.app -t streamcamserver-app:test .
 
-      - name: Build models image
-        run: docker build -f Dockerfile.models -t streamcamserver-models:test .
-
-      - name: Smoke test composed containers
-        env:
-          APP_IMAGE: streamcamserver-app:test
-          MODELS_IMAGE: streamcamserver-models:test
-        run: |
-          set -e
-          docker compose up -d
-
-          for i in {1..30}; do
-            if curl -kfsS https://127.0.0.1:8080 > /dev/null; then
-              echo "Compose smoke test passed"
-              docker compose logs app
-              exit 0
-            fi
-            sleep 2
-          done
-
-          echo "Compose smoke test failed"
-          docker compose logs
-          exit 1
-
-      - name: Cleanup smoke test stack
-        if: always()
-        run: docker compose down -v
-
-  build-and-push:
+  build-and-push-app:
     runs-on: ubuntu-latest
     needs: test
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
@@ -86,12 +65,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      # Buildx enables the docker/build-push-action step to perform the image build.
-      # The Dockerfile is taken from the repository root by default.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # This authenticates the runner with Docker Hub so a later step can push the image.
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -104,8 +80,49 @@ jobs:
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.APP_IMAGE_NAME }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable={{is_default_branch}}
             type=sha
+
+      - name: Build and push app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./infra/docker/Dockerfile.app
+          push: true
+          tags: ${{ steps.meta_app.outputs.tags }}
+          labels: ${{ steps.meta_app.outputs.labels }}
+
+  build-and-push-models:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download model bundle from GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          mkdir -p dist
+          gh release download "$RELEASE_TAG" \
+            --pattern "model-bundle.tar.gz" \
+            --pattern "model-bundle.tar.gz.sha256" \
+            --dir dist
+          sha256sum -c dist/model-bundle.tar.gz.sha256
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract models image metadata
         id: meta_models
@@ -115,48 +132,13 @@ jobs:
           tags: |
             type=raw,value=latest
             type=sha
-
-      - name: Build and push app image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ${{ steps.meta_app.outputs.tags }}
-          labels: ${{ steps.meta_app.outputs.labels }}
+            type=raw,value=${{ inputs.release_tag }}
 
       - name: Build and push models image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile.models
+          file: ./infra/docker/Dockerfile.models
           push: true
           tags: ${{ steps.meta_models.outputs.tags }}
           labels: ${{ steps.meta_models.outputs.labels }}
-
-      - name: Verify published Docker images together
-        env:
-          APP_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.APP_IMAGE_NAME }}:latest
-          MODELS_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.MODELS_IMAGE_NAME }}:latest
-        run: |
-          set -e
-          docker pull "$APP_IMAGE"
-          docker pull "$MODELS_IMAGE"
-          docker compose up -d
-
-          for i in {1..30}; do
-            if curl -kfsS https://127.0.0.1:8080 > /dev/null; then
-              echo "Published image health check passed"
-              docker compose logs app
-              exit 0
-            fi
-            sleep 2
-          done
-
-          echo "Published image health check failed"
-          docker compose logs
-          exit 1
-
-      - name: Cleanup published image stack
-        if: always()
-        run: docker compose down -v

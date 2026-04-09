@@ -1,0 +1,19 @@
+FROM debian:bookworm-slim
+
+ENV MODELS_DIR=/models \
+    SHARED_MODELS_DIR=/shared-models
+
+WORKDIR /bundle
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tar \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY dist/model-bundle.tar.gz /tmp/model-bundle.tar.gz
+COPY infra/docker/copy_models.sh /usr/local/bin/copy_models.sh
+
+RUN mkdir -p "$MODELS_DIR" \
+    && tar -xzf /tmp/model-bundle.tar.gz -C "$MODELS_DIR" --strip-components=1 \
+    && chmod +x /usr/local/bin/copy_models.sh
+
+CMD ["/usr/local/bin/copy_models.sh"]

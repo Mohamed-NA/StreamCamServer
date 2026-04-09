@@ -1,211 +1,181 @@
 # StreamCamServer
 
-Real-time browser camera streaming over HTTPS/WSS with server-side mask detection and hot-swappable inference models.
+Real-time browser camera streaming over HTTPS/WSS with server-side mask detection and switchable runtime models.
 
-The app serves a web UI, receives webcam frames over Socket.IO, runs inference on the server, and sends back an annotated frame plus structured detections.
-
-## What It Supports
-
-- `MobileNetV2` TFLite classifier
-- `ViT Base` ONNX classifier
-- `Faster R-CNN` ONNX detector
-- live model switching from the UI
-- HTTPS + WSS with local certificates
-- notebook workflow for training and ONNX export
+The app serves a web UI, receives webcam frames over Socket.IO, runs inference on the server, and returns an annotated frame plus structured detections.
 
 ## Project Layout
 
 ```text
 .
-├── server.py                      # Flask + Socket.IO server
-├── model_manager.py               # model loading, switching, inference, drawing
-├── models.json                    # model registry and active default
+├── streamcamserver/               # runtime package + training/export code
+│   ├── app.py
+│   ├── inference.py
+│   ├── paths.py
+│   └── training/
+├── scripts/
+│   ├── run_server.py
+│   ├── train_models.py
+│   ├── export_models.py
+│   ├── package_model_bundle.py
+│   └── install_model_bundle.py
+├── config/
+│   └── models.json                # model registry and active default
+├── infra/
+│   └── docker/
+│       ├── Dockerfile.app
+│       ├── Dockerfile.models
+│       ├── compose.yaml
+│       └── copy_models.sh
+├── model/                         # local unpacked runtime artifacts
 ├── notebooks/
-│   └── mask_detector_4_DEBI.ipynb # training + export notebook
-├── model/                         # runtime model artifacts used by the server
-├── data/                          # local dataset storage (gitignored)
+│   ├── mask_detector_4_DEBI.ipynb
+│   └── train_in_colab.ipynb
 ├── templates/
 ├── static/
 └── certificates/
 ```
 
+## Supported Runtime Models
+
+- `MobileNetV2` classifier via TensorFlow Lite
+- `ViT Base` classifier via ONNX Runtime
+- `Faster R-CNN` detector via ONNX Runtime
+
+The active/default registry lives in [config/models.json](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/config/models.json).
+
 ## Requirements
 
 - Python `3.12`
 - `uv`
-- local certificate files at:
+- local TLS certs at:
   - `certificates/certificate.crt`
   - `certificates/private.key`
 
-For the Faster R-CNN notebook section, your Python build must support `lzma` so `torchvision` imports cleanly.
+For training and export, install the notebook dependency group.
 
 ## Setup
-
-Create the environment and install project dependencies:
 
 ```bash
 uv sync --group notebook
 ```
 
-Use the project environment for everything:
+## Run The Server
 
 ```bash
-uv run python --version
+uv run scripts/run_server.py
 ```
 
-For Jupyter:
+The app listens on `https://localhost:8080`.
+
+## Training
+
+Run training outside the notebook with:
 
 ```bash
-uv run --group notebook jupyter lab
+uv run scripts/train_models.py vit
+uv run scripts/train_models.py rcnn
+uv run scripts/train_models.py all
 ```
 
-## Running The Server
+The training script defaults to `--workers 2`, which is a safer laptop baseline than aggressive notebook multiprocessing.
 
-Start the app with the project environment:
+## Export Runtime Models
+
+After training checkpoints exist:
 
 ```bash
-uv run python server.py
+uv run scripts/export_models.py vit
+uv run scripts/export_models.py rcnn
+uv run scripts/export_models.py all
 ```
 
-The server listens on:
+This writes deployable runtime files into `model/`.
 
-- `https://0.0.0.0:8080`
+## Model Bundle Workflow
 
-Open it in your browser at:
+Runtime model binaries are meant to live outside normal git history.
 
-```text
-https://localhost:8080
+Local workflow:
+
+1. Export runtime files into `model/`
+2. Package them into a release archive
+3. Upload the archive to GitHub Releases
+4. Trigger the GitHub Actions models-image build with that release tag
+
+Create the bundle:
+
+```bash
+uv run scripts/package_model_bundle.py
+```
+
+That writes:
+
+- `dist/model-bundle.tar.gz`
+- `dist/model-bundle.tar.gz.sha256`
+
+Install a downloaded bundle into `model/`:
+
+```bash
+uv run scripts/install_model_bundle.py dist/model-bundle.tar.gz
+```
+
+The bundle includes:
+
+- runtime files from `model/`
+- `config/models.json`
+- a `manifest.json` with per-file SHA-256 hashes
+
+Example upload with GitHub CLI:
+
+```bash
+gh release create v1.0.0 --title "v1.0.0" --notes "Runtime model bundle release"
+gh release upload v1.0.0 dist/model-bundle.tar.gz dist/model-bundle.tar.gz.sha256
 ```
 
 ## Docker
 
-This repo now supports a split container layout:
+This repo uses a split image layout:
 
-- `streamcamserver-app`: server + UI
-- `streamcamserver-models`: runtime model bundle
+- `streamcamserver-app`: code, UI, config, certificates
+- `streamcamserver-models`: runtime model bundle only
 
-The app container keeps the current UI model chooser by reading all model files from a shared Docker volume mounted at `/app/model`.
+The models image now builds from `dist/model-bundle.tar.gz`, not directly from tracked files in `model/`.
 
-### Build Local Images
-
-```bash
-docker build -t streamcamserver-app:local .
-docker build -f Dockerfile.models -t streamcamserver-models:local .
-```
-
-### Run With Compose
+Build locally:
 
 ```bash
-docker compose up
-```
-
-That starts:
-
-- a `models` init container that copies model files into a named Docker volume
-- an `app` container that mounts the same volume and serves the UI on `https://localhost:8080`
-- the app image uses the bundled `certificates/` directory by default
-
-## Certificates
-
-If you do not already have local certs, create them with:
-
-```bash
-mkdir -p certificates
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout certificates/private.key \
-  -out certificates/certificate.crt
-```
-
-## Models
-
-The server reads model definitions from [models.json](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/models.json).
-
-Configured models:
-
-- `mobilenet`: TFLite 2-class classifier
-- `vit`: ONNX 3-class classifier
-- `faster_rcnn`: ONNX detector
-
-At runtime:
-
-- `GET /api/models` returns model availability and active state
-- Socket event `switch_model` swaps the active model
-- Socket event `video_frame` sends a frame to the server
-
-## Notebook Workflow
-
-The notebook is:
-
-- [mask_detector_4_DEBI.ipynb](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/notebooks/mask_detector_4_DEBI.ipynb)
-
-For Google Colab, use:
-
-- [train_in_colab.ipynb](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/notebooks/train_in_colab.ipynb)
-
-It is set up to:
-
-- require the repo `.venv`
-- download the Kaggle dataset
-- copy the dataset into:
-  - `data/face-mask-detection`
-- remove the temporary KaggleHub cache copy after the local copy is created
-- train the ViT classifier
-- train the Faster R-CNN detector
-- export ONNX models into `notebooks/exports`
-- copy exported models into `model/`
-
-Dataset contents are intentionally gitignored.
-
-## Script Training
-
-You can run training outside Jupyter with:
-
-```bash
-uv run python train_models.py vit
-uv run python train_models.py rcnn
-uv run python train_models.py all
-```
-
-The script defaults to `--workers 2`, which is a safer baseline for a laptop workflow than using aggressive notebook multiprocessing.
-
-## Expected Model Files
-
-The server can run with the following files in `model/`:
-
-- `model.tflite`
-- `vit_model.onnx`
-- `faster_rcnn.onnx`
-
-If an ONNX model is missing, it will show as unavailable in the UI and API.
-
-## Docker Hub Workflow
-
-If you publish both images to Docker Hub, users can run the full stack without cloning the repo.
-
-Pull:
-
-```bash
-docker pull <dockerhub-user>/streamcamserver-app:latest
-docker pull <dockerhub-user>/streamcamserver-models:latest
+uv run scripts/package_model_bundle.py
+docker build -f infra/docker/Dockerfile.app -t streamcamserver-app:local .
+docker build -f infra/docker/Dockerfile.models -t streamcamserver-models:local .
 ```
 
 Run with Compose:
 
 ```bash
-APP_IMAGE=<dockerhub-user>/streamcamserver-app:latest \
-MODELS_IMAGE=<dockerhub-user>/streamcamserver-models:latest \
-docker compose up
+docker compose -f infra/docker/compose.yaml up
 ```
 
-The current UI model chooser will still work because the app container sees all model files locally in the shared volume.
+The `models` container copies the unpacked bundle into a shared Docker volume mounted at `/app/model` in the app container.
 
-## Development Notes
+## GitHub Releases Recommendation
 
-- Use `uv`, not `pip`, for environment management in this repo.
-- The notebook and pyright config are set up for the repo-local `.venv`.
-- `data/face-mask-detection/` is ignored and should not be committed.
-- The app image is code-only and expects model files from the shared `/app/model` volume.
-- The models image publishes runtime artifacts separately from the server/UI image.
+Recommended artifact flow:
+
+1. Train/export models locally or in Colab/Kaggle
+2. Run `uv run scripts/package_model_bundle.py`
+3. Upload `dist/model-bundle.tar.gz` and its checksum to a GitHub Release
+4. Run the `Test and Publish Images` workflow manually with `release_tag=<your-tag>`
+5. The workflow downloads the release asset and builds the models image from it
+
+This keeps runtime binaries out of normal source history while still allowing reproducible image builds.
+
+## Notebooks
+
+- Local notebook: [notebooks/mask_detector_4_DEBI.ipynb](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/notebooks/mask_detector_4_DEBI.ipynb)
+- Colab notebook: [notebooks/train_in_colab.ipynb](/Users/nasser/ettbtm/work/DEBI/StreamCamServer/notebooks/train_in_colab.ipynb)
+
+The notebook workflow is for training and export. The deployable runtime artifacts belong in `model/` or in a packaged release bundle.
 
 ## Common Commands
 
@@ -215,10 +185,10 @@ Sync dependencies:
 uv sync --group notebook
 ```
 
-Run the server:
+Run the app:
 
 ```bash
-uv run python server.py
+uv run scripts/run_server.py
 ```
 
 Open Jupyter:
@@ -227,27 +197,14 @@ Open Jupyter:
 uv run --group notebook jupyter lab
 ```
 
-Run training as a script:
+Package the runtime bundle:
 
 ```bash
-uv run python train_models.py all
+uv run scripts/package_model_bundle.py
 ```
 
-Verify the runtime environment:
+Install a bundle into `model/`:
 
 ```bash
-./.venv/bin/python -c "import cv2, numpy, flask, flask_socketio; print('ok')"
-```
-
-Build split Docker images:
-
-```bash
-docker build -t streamcamserver-app:local .
-docker build -f Dockerfile.models -t streamcamserver-models:local .
-```
-
-Run split Docker stack:
-
-```bash
-docker compose up
+uv run scripts/install_model_bundle.py dist/model-bundle.tar.gz
 ```

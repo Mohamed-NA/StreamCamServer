@@ -178,3 +178,13 @@ data/
 
 # Training artifacts and checkpoints
 notebooks/vit-face-mask/checkpoint-129/
+notebooks/vit-face-mask/
+notebooks/checkpoints/
+notebooks/exports/
+notebooks/cache/
+.tmp/
+
+# Runtime model artifacts are packaged into release bundles, not committed directly.
+model/*
+!model/.gitkeep
+!model/README.md

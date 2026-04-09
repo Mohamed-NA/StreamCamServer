@@ -2,8 +2,7 @@
   "venvPath": ".",
   "venv": ".venv",
   "include": [
-    "server.py",
-    "model_manager.py",
+    "streamcamserver",
     "notebooks"
   ]
 }
